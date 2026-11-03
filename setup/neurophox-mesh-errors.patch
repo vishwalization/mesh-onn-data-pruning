@@ -1,0 +1,318 @@
+diff --git a/neurophox/meshmodel.py b/neurophox/meshmodel.py
+index 520b3e0..d90e072 100644
+--- a/neurophox/meshmodel.py
++++ b/neurophox/meshmodel.py
+@@ -10,6 +10,7 @@ from .helpers import butterfly_permutation, grid_permutation, to_stripe_array, p
+     get_efficient_coarse_grain_block_sizes, get_default_coarse_grain_block_sizes
+ from .initializers import get_initializer, MeshPhaseInitializer, PhaseInitializer
+ from .config import BLOCH, TEST_SEED
++import copy
+ 
+ 
+ class MeshModel:
+@@ -32,22 +33,30 @@ class MeshModel:
+     """
+ 
+     def __init__(self, perm_idx: np.ndarray, hadamard: bool = False, num_tunable: Optional[np.ndarray] = None,
+-                 bs_error: float = 0.0, testing: bool = False, use_different_errors: bool = False,
++                 bs_error: float = 0.0,
++                 wvgloss: Union[np.ndarray, float] = 0.0,
++                 testing: bool = False, use_different_errors: bool = False,
++                 mzi3pos: np.ndarray = None, 
+                  theta_init: Union[str, tuple, np.ndarray] = "random_theta",
+                  phi_init: Union[str, tuple, np.ndarray] = "random_phi",
+-                 gamma_init: Union[str, np.ndarray] = "random_gamma", basis: str = BLOCH):
++                 gamma_init: Union[str, np.ndarray] = "random_gamma",
++                 gamma_pos: str=None,
++                 basis: str = BLOCH):
+         self.units = perm_idx.shape[1]
+         self.num_layers = perm_idx.shape[0] - 1
+         self.perm_idx = perm_idx
+         self.num_tunable = num_tunable if num_tunable is not None else self.units // 2 * np.ones((self.num_layers,))
+         self.hadamard = hadamard
+         self.bs_error = bs_error
++        self.wvgloss = wvgloss
+         self.testing = testing
+         self.use_different_errors = use_different_errors
+         self.mask = np.zeros((self.num_layers, self.units // 2))
++        self.mzi3pos = mzi3pos
+         self.theta_init, self.theta_fn = (theta_init, None) if not isinstance(theta_init, tuple) else theta_init
+         self.phi_init, self.phi_fn = (phi_init, None) if not isinstance(phi_init, tuple) else phi_init
+         self.gamma_init, self.gamma_fn = (gamma_init, None) if not isinstance(gamma_init, tuple) else gamma_init
++        self.gamma_pos = gamma_pos
+         self.basis = basis
+         for layer in range(self.num_layers):
+             self.mask[layer][:int(self.num_tunable[layer])] = 1
+@@ -88,6 +97,15 @@ class MeshModel:
+         mask = self.mask if self.mask is not None else np.ones((self.num_layers, self.units // 2))
+         if isinstance(self.bs_error, float) or isinstance(self.bs_error, int):
+             e_l = np.random.randn(self.num_layers, self.units // 2) * self.bs_error
++            
++            if self.mzi3pos is not None:
++                e_3 = np.zeros((self.num_layers, self.units))
++                e_3entries = np.random.randn(self.num_layers, self.units // 2) * self.bs_error
++                e_3[:, ::2] = e_3entries
++                #mzi3comp = self.mzi3pos[:, ::2]
++                #mzi3comp = mzi3comp[:, :self.units // 2]
++                e_3[self.mzi3pos==0] = -np.pi / 4
++            
+             if self.use_different_errors:
+                 if self.testing:
+                     np.random.seed(TEST_SEED + 1)
+@@ -101,21 +119,63 @@ class MeshModel:
+         elif isinstance(self.bs_error, tuple):
+             if self.bs_error[0].shape != self.mask.shape or self.bs_error[1].shape != self.mask.shape:
+                 raise AttributeError('bs_error.shape and mask.shape should be the same.')
+-            e_l, e_r = self.bs_error
++            e_l = self.bs_error[0]; e_r = self.bs_error[1]
++            if self.mzi3pos is not None:
++                e_3 = self.bs_error[2]
+         else:
+             raise TypeError('bs_error must be float, ndarray or (ndarray, ndarray).')
+-        return e_l * mask, e_r * mask
++        if self.mzi3pos is None:
++            return e_l * mask, e_r * mask
++        else:
++            return e_l * mask, e_r * mask, e_3
++        
++    @property
++    def mzi_loss_matrices(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
++        """
++
++        Returns:
++            Loss numpy arrays for Numpy :code:`MeshNumpyLayer`
++        """
++        if isinstance(self.wvgloss, float) or isinstance(self.wvgloss, int):
++            wvglossconst = np.power(10.0, -np.ones((self.num_layers, self.units // 2)) * self.wvgloss/20)
++            midup = to_stripe_array(wvglossconst, self.units) 
++            middown = copy.deepcopy(midup)
++            inup = copy.deepcopy(midup)
++            indown = copy.deepcopy(midup)
++            outup = copy.deepcopy(midup)
++            outdown = copy.deepcopy(midup)
++        elif isinstance(self.wvgloss, np.ndarray):
++            midup = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 1, 0]/20), self.units) 
++            middown = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 1, 1]/20), self.units)
++            inup = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 0, 0]/20), self.units)
++            indown = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 0, 1]/20), self.units)
++            outup = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 2, 0]/20), self.units)
++            outdown = to_stripe_array(np.power(10.0, -self.wvgloss[:, :, 2, 1]/20), self.units)
++        else:
++            raise TypeError('bs_error must be float, ndarray or (ndarray, ndarray).')
++
++        return midup, middown, inup, indown, outup, outdown 
+ 
+     @property
+     def mzi_error_tensors(self):
+-        e_l, e_r = self.mzi_error_matrices
++        if self.mzi3pos is None:
++            e_l, e_r = self.mzi_error_matrices
++        else:
++            e_l, e_r, e_3 = self.mzi_error_matrices
+ 
+         cc = 2 * to_stripe_array(np.cos(np.pi / 4 + e_l) * np.cos(np.pi / 4 + e_r), self.units)
+         cs = 2 * to_stripe_array(np.cos(np.pi / 4 + e_l) * np.sin(np.pi / 4 + e_r), self.units)
+         sc = 2 * to_stripe_array(np.sin(np.pi / 4 + e_l) * np.cos(np.pi / 4 + e_r), self.units)
+         ss = 2 * to_stripe_array(np.sin(np.pi / 4 + e_l) * np.sin(np.pi / 4 + e_r), self.units)
+-
+-        return ss, cs, sc, cc
++            
++        if self.mzi3pos is None:
++            return ss, cs, sc, cc
++        else:
++            # c3 = to_stripe_array(np.cos(np.pi / 4 + e_3), self.units)
++            # s3 = to_stripe_array(np.sin(np.pi / 4 + e_3), self.units)
++            c3 = np.cos(np.pi / 4 + e_3.T)
++            s3 = np.sin(np.pi / 4 + e_3.T)
++            return ss, cs, sc, cc, c3, s3
+ 
+ 
+ class RectangularMeshModel(MeshModel):
+@@ -139,9 +199,13 @@ class RectangularMeshModel(MeshModel):
+     """
+ 
+     def __init__(self, units: int, num_layers: int = None, hadamard: bool = False, bs_error: float = 0.0,
+-                 basis: str = BLOCH, theta_init: Union[str, tuple, np.ndarray] = "haar_rect",
++                 wvgloss: Union[np.ndarray, float] = 0.0,
++                 basis: str = BLOCH,
++                 mzi3pos: np.ndarray = None,
++                 theta_init: Union[str, tuple, np.ndarray] = "haar_rect",
+                  phi_init: Union[str, tuple, np.ndarray] = "random_phi",
+-                 gamma_init: Union[str, tuple, np.ndarray] = "random_gamma"):
++                 gamma_init: Union[str, tuple, np.ndarray] = "random_gamma", 
++                 gamma_pos: str=None):
+         self.num_layers = num_layers if num_layers else units
+         perm_idx = grid_permutation(units, self.num_layers).astype(np.int32)
+         num_mzis = (np.ones((self.num_layers,)) * units // 2).astype(np.int32)
+@@ -149,10 +213,13 @@ class RectangularMeshModel(MeshModel):
+         super(RectangularMeshModel, self).__init__(perm_idx,
+                                                    hadamard=hadamard,
+                                                    bs_error=bs_error,
++                                                   wvgloss=wvgloss,
+                                                    num_tunable=num_mzis,
++                                                   mzi3pos=mzi3pos,
+                                                    theta_init=theta_init,
+                                                    phi_init=phi_init,
+                                                    gamma_init=gamma_init,
++                                                   gamma_pos=gamma_pos,
+                                                    basis=basis)
+ 
+ 
+diff --git a/neurophox/tensorflow/generic.py b/neurophox/tensorflow/generic.py
+index 22ef9a3..96e477f 100644
+--- a/neurophox/tensorflow/generic.py
++++ b/neurophox/tensorflow/generic.py
+@@ -427,9 +427,21 @@ class Mesh:
+         self.model = model
+         self.units, self.num_layers = self.model.units, self.model.num_layers
+         self.pairwise_perm_idx = pairwise_off_diag_permutation(self.units)
+-        ss, cs, sc, cc = self.model.mzi_error_tensors
++        midup, middown, inup, indown, outup, outdown = self.model.mzi_loss_matrices
++        if self.model.mzi3pos is None:
++            ss, cs, sc, cc = self.model.mzi_error_tensors
++        else:
++            ss, cs, sc, cc, c3, s3 = self.model.mzi_error_tensors
++            self.c3 = tf.constant(c3, dtype=TF_COMPLEX)
++            self.s3 = tf.constant(s3, dtype=TF_COMPLEX)
+         self.ss, self.cs, self.sc, self.cc = tf.constant(ss, dtype=TF_COMPLEX), tf.constant(cs, dtype=TF_COMPLEX), \
+                                              tf.constant(sc, dtype=TF_COMPLEX), tf.constant(cc, dtype=TF_COMPLEX)
++        self.midup, self.middown, self.inup, self.indown, self.outup, self.outdown = tf.constant(midup, dtype=TF_COMPLEX), \
++                                                           tf.constant(middown, dtype=TF_COMPLEX), \
++                                                           tf.constant(inup, dtype=TF_COMPLEX), \
++                                                           tf.constant(indown, dtype=TF_COMPLEX), \
++                                                           tf.constant(outup, dtype=TF_COMPLEX), \
++                                                           tf.constant(outdown, dtype=TF_COMPLEX)
+         self.perm_layers = [PermutationLayer(self.model.perm_idx[layer]) for layer in range(self.num_layers + 1)]
+ 
+     def mesh_layers(self, phases: MeshPhasesTensorflow) -> List[MeshVerticalLayer]:
+@@ -451,13 +463,47 @@ class Mesh:
+             s12 = _roll_tensor(self.cs * internal_psl - self.sc * _roll_tensor(internal_psl, up=True))
+             s21 = self.sc * internal_psl - self.cs * _roll_tensor(internal_psl, up=True)
+         else:
+-            s11 = self.cc * internal_psl - self.ss * _roll_tensor(internal_psl, up=True)
+-            s22 = _roll_tensor(-self.ss * internal_psl + self.cc * _roll_tensor(internal_psl, up=True))
+-            s12 = 1j * _roll_tensor(self.cs * internal_psl + self.sc * _roll_tensor(internal_psl, up=True))
+-            s21 = 1j * (self.sc * internal_psl + self.cs * _roll_tensor(internal_psl, up=True))
+-
+-        diag_layers = external_psl * (s11 + s22) / 2
+-        off_diag_layers = _roll_tensor(external_psl) * (s21 + s12) / 2
++            if isinstance(self.model.wvgloss, float) and self.model.wvgloss == 0.0:
++                s11old = self.cc * internal_psl - self.ss * _roll_tensor(internal_psl, up=True)
++                s22old = _roll_tensor(-self.ss * internal_psl + self.cc * _roll_tensor(internal_psl, up=True))
++                s12old = 1j * _roll_tensor(self.cs * internal_psl + self.sc * _roll_tensor(internal_psl, up=True))
++                s21old = 1j * (self.sc * internal_psl + self.cs * _roll_tensor(internal_psl, up=True))
++                if self.model.mzi3pos is not None:
++                    print('Entered if mesh_layers')
++                    s11mid = external_psl * s11old
++                    s12mid = _roll_tensor(external_psl * _roll_tensor(s12old, up=True))
++                    s11 = s11mid * self.c3 + 1j * s21old * self.s3
++                    s12 = _roll_tensor(1j * _roll_tensor(s22old, up=True) * self.s3 + _roll_tensor(s12mid, up=True) * self.c3)
++                    s21 = s21old * self.c3 + 1j * s11mid * self.s3
++                    s22 = _roll_tensor(1j * _roll_tensor(s12mid, up=True) * self.s3 + _roll_tensor(s22old, up=True) * self.c3)
++                else:
++                    s11, s12, s21, s22 = s11old, s12old, s21old, s22old
++            else:
++                s11old = self.cc*internal_psl*self.midup  - self.ss*_roll_tensor(internal_psl, up=True)*self.middown
++                s22old = _roll_tensor(-self.ss*internal_psl*self.midup + self.cc*_roll_tensor(internal_psl, up=True)*self.middown)
++                s12old = 1j*_roll_tensor(self.cs*internal_psl*self.midup + self.sc*_roll_tensor(internal_psl, up=True)*self.middown)
++                s21old = 1j*(self.sc*internal_psl*self.midup + self.cs*_roll_tensor(internal_psl, up=True)*self.middown)
++                if self.model.mzi3pos is not None:
++                    raise ValueError('3mzis with unbalanced loss not implemented.')
++                else: 
++                    s11 = self.inup * self.outup * s11old
++                    s12 = _roll_tensor(self.indown * self.outup) * s12old
++                    s21 = self.inup * self.outdown * s21old
++                    s22 = _roll_tensor(self.indown * self.outdown) * s22old
++        
++        if self.model.gamma_pos == 'out':
++            if self.model.mzi3pos is None: 
++                diag_layers = external_psl * (s11 + s22) / 2
++                off_diag_layers = external_psl * (s21 + s12) / 2
++            else:
++                raise ValueError('mzi3pos must be None when gamma_pos = out')
++        else:
++            if self.model.mzi3pos is None:
++                diag_layers = external_psl * (s11 + s22) / 2
++                off_diag_layers = _roll_tensor(external_psl) * (s21 + s12) / 2
++            else:
++                diag_layers = (s11 + s22) / 2
++                off_diag_layers = (s21 + s12) / 2
+ 
+         if self.units % 2:
+             diag_layers = tf.concat((diag_layers[:-1], tf.ones_like(diag_layers[-1:])), axis=0)
+@@ -513,14 +559,22 @@ class MeshLayer(TransformerLayer):
+         """
+         _inputs = np.eye(self.units, dtype=np.complex64) if self.incoherent else inputs
+         mesh_phases, mesh_layers = self.phases_and_layers
+-        outputs = _inputs * mesh_phases.input_phase_shift_layer
+-        for layer in range(self.num_layers):
+-            outputs = mesh_layers[layer].transform(outputs)
+-        if self.incoherent:
+-            power_matrix = tf.math.real(outputs) ** 2 + tf.math.imag(outputs) ** 2
+-            power_inputs = tf.math.real(inputs) ** 2 + tf.math.imag(inputs) ** 2
+-            outputs = power_inputs @ power_matrix
+-            return tf.complex(tf.sqrt(outputs), tf.zeros_like(outputs))
++        if self.mesh.model.gamma_pos == 'out':
++            outputs = _inputs
++            for layer in range(self.num_layers):
++                outputs = mesh_layers[layer].transform(outputs)
++            outputs = outputs * mesh_phases.input_phase_shift_layer
++            if self.incoherent:
++                raise ValueError('incoherent must be OFF when gamma_pos = out')
++        else:
++            outputs = _inputs * mesh_phases.input_phase_shift_layer
++            for layer in range(self.num_layers):
++                outputs = mesh_layers[layer].transform(outputs)
++            if self.incoherent:
++                power_matrix = tf.math.real(outputs) ** 2 + tf.math.imag(outputs) ** 2
++                power_inputs = tf.math.real(inputs) ** 2 + tf.math.imag(inputs) ** 2
++                outputs = power_inputs @ power_matrix
++                return tf.complex(tf.sqrt(outputs), tf.zeros_like(outputs))
+         return outputs
+ 
+     @tf.function
+@@ -540,10 +594,15 @@ class MeshLayer(TransformerLayer):
+             Inverse transformed :code:`outputs`, :math:`V_{\mathrm{in}}`
+         """
+         mesh_phases, mesh_layers = self.phases_and_layers
+-        inputs = outputs
+-        for layer in reversed(range(self.num_layers)):
+-            inputs = mesh_layers[layer].inverse_transform(inputs)
+-        inputs = inputs * tf.math.conj(mesh_phases.input_phase_shift_layer)
++        if self.mesh.model.gamma_pos == 'out':
++            inputs = outputs * tf.math.conj(mesh_phases.input_phase_shift_layer)
++            for layer in reversed(range(self.num_layers)):
++                inputs = mesh_layers[layer].inverse_transform(inputs)
++        else:
++            inputs = outputs
++            for layer in reversed(range(self.num_layers)):
++                inputs = mesh_layers[layer].inverse_transform(inputs)
++            inputs = inputs * tf.math.conj(mesh_phases.input_phase_shift_layer)
+         return inputs
+ 
+     @property
+diff --git a/neurophox/tensorflow/layers.py b/neurophox/tensorflow/layers.py
+index d319550..ad11763 100644
+--- a/neurophox/tensorflow/layers.py
++++ b/neurophox/tensorflow/layers.py
+@@ -28,13 +28,18 @@ class RM(MeshLayer):
+ 
+     def __init__(self, units: int, num_layers: int = None, hadamard: bool = False, incoherent: bool = False,
+                  basis: str = DEFAULT_BASIS, bs_error: float = 0.0,
++                 wvgloss: Union[np.ndarray, float] = 0.0,
+                  theta_init: Union[str, tuple, np.ndarray] = "haar_rect",
+                  phi_init: Union[str, tuple, np.ndarray] = "random_phi",
+                  gamma_init: Union[str, tuple, np.ndarray] = "random_gamma",
++                 gamma_pos: str=None,
+                  phase_loss_fn: Optional[Callable[[tf.Tensor], tf.Tensor]] = None,
+-                 activation: Activation = None, **kwargs):
++                 activation: Activation = None, 
++                 mzi3pos: np.ndarray = None,
++                 **kwargs):
+         super(RM, self).__init__(
+-            RectangularMeshModel(units, num_layers, hadamard, bs_error, basis, theta_init, phi_init, gamma_init),
++            RectangularMeshModel(units, num_layers, hadamard, bs_error, wvgloss, basis, mzi3pos, theta_init,\
++                                 phi_init, gamma_init, gamma_pos),
+             activation=activation, incoherent=incoherent,
+             phase_loss_fn=phase_loss_fn, **kwargs
+         )

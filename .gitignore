@@ -1,0 +1,30 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Notebooks / editors ---
+.ipynb_checkpoints/
+*.ipynb
+.vscode/
+.idea/
+.DS_Store
+
+# --- Experiment outputs (regenerate with the scripts in experiments/) ---
+runs/
+models/
+*.pb
+*.pkl
+*.pickle
+*.h5
+*.keras
+*.index
+*.data-?????-of-?????
+variables/
+assets/
+
+# --- Datasets cached by Keras ---
+*.npz
