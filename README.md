@@ -192,5 +192,7 @@ checkpoints (~220 MB) are not tracked and can be regenerated with the commands a
 
 ## License
 
-MIT. The `mesh_onn/` package is derived from code © 2023 MIT Quantum Photonics Group (MIT License);
-everything else © 2023–2024 A.K. Vishwanathan. See [`LICENSE`](LICENSE).
+MIT. The `mesh_onn/` package is derived from code © 2023 MIT Quantum Photonics Group (MIT License).
+`setup/neurophox-mesh-errors.patch` modifies [neurophox](https://github.com/solgaardlab/neurophox)
+© 2019 Solgaard Lab (MIT License); its licence notice is kept in the patch file.
+`experiments/`, `results/` and `data/` © 2023–2024 A.K. Vishwanathan. See [`LICENSE`](LICENSE).
